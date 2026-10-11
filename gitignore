@@ -1,0 +1,35 @@
+# Virtual environments
+.venv/
+.venv-ui/
+venv/
+env/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Student data (personal progress, created automatically on first run)
+student.db
+*.db
+*.sqlite3
+
+# Secrets - never commit keys or tokens
+.env
+.env.*
+.streamlit/secrets.toml
+*.key
+
+# Model downloads / caches (the model downloads itself)
+.cache/
+huggingface/
+*.safetensors
+*.bin
+*.gguf
+
+# Notebook / editor / OS clutter
+.ipynb_checkpoints/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
