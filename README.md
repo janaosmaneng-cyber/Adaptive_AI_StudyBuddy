@@ -55,34 +55,42 @@ The backend keeps **no student data**. Progress lives only in `student.db` on yo
 ## Project structure
 
 ```text
-.
-├── app.py                  FastAPI app (registers all routers)
-├── config.py               Settings (model names, limits, API key)
-├── auth.py                 Bearer-token check
-├── schemas.py              Request/response models
-├── requirements.txt        Backend packages (Kaggle)
-├── routers/
-│   ├── health.py           GET  /health      (public)
-│   ├── generate.py         POST /generate
-│   ├── documents.py        POST /ingest, POST /reset
-│   ├── topics.py           GET  /topics
-│   ├── chat.py             POST /chat
-│   ├── quiz.py             POST /quiz
-│   └── flashcards.py       POST /flashcards
-├── services/
-│   ├── model_service.py    Loads the LLM
-│   ├── vector_store.py     Embeddings + FAISS index (in RAM)
-│   ├── pdf_service.py      PDF text extraction + chunking
-│   ├── topic_service.py    Splits each PDF into topics
-│   └── json_utils.py       Safe parsing of model JSON output
-├── streamlit_app.py        The frontend
-├── api_client.py           Frontend → backend calls (adds the ngrok header)
-├── requirements-frontend.txt
-├── .streamlit/config.toml  Theme + 50 MB upload limit
-├── student_data/           Student progress layer (SQLite): mastery, spaced repetition
-├── tests/test_student_data.py   33 unit tests for the student layer
-└── student.db              Created automatically (one file = one student)
+AdaptiveAI/
+├── .gitignore
+├── README.md
+│
+├── backend/                       # runs on Kaggle (GPU) behind ngrok; your own notebook starts it
+│   ├── app.py                     FastAPI app (registers all routers)
+│   ├── config.py                  Settings (models, limits, API key)
+│   ├── auth.py                    Bearer-token check
+│   ├── schemas.py                 Request/response models
+│   ├── requirements.txt           Backend packages
+│   ├── routers/
+│   │   ├── health.py              GET  /health      (public)
+│   │   ├── generate.py            POST /generate
+│   │   ├── documents.py           POST /ingest, POST /reset
+│   │   ├── topics.py              GET  /topics
+│   │   ├── chat.py                POST /chat
+│   │   ├── quiz.py                POST /quiz
+│   │   └── flashcards.py          POST /flashcards
+│   └── services/
+│       ├── model_service.py       Loads the LLM + embedding model
+│       ├── vector_store.py        Chunks + FAISS index (in RAM)
+│       ├── pdf_service.py         PDF text extraction
+│       ├── topic_service.py       Topic splitting and titles
+│       └── json_utils.py          Safe parsing of model JSON output
+│
+└── frontend/                      # runs on your computer
+    ├── streamlit_app.py           The app
+    ├── api_client.py              Calls the backend (adds key + ngrok header)
+    ├── requirements-frontend.txt  Frontend packages
+    ├── .streamlit/config.toml     Theme + 50 MB upload limit
+    ├── student_data/              Progress layer (SQLite): mastery, spaced repetition
+    ├── tests/test_student_data.py 33 unit tests
+    └── student.db                 Created automatically on first run
 ```
+
+The two folders never import each other. They only talk over HTTP.
 
 ---
 
@@ -90,7 +98,7 @@ The backend keeps **no student data**. Progress lives only in `student.db` on yo
 
 Start the **backend first**. The frontend needs the ngrok URL that the backend prints.
 
-1. **Backend:** run the Kaggle notebook (Part 1 below) and copy the printed URL.
+1. **Backend:** run your Kaggle notebook (Part 1 below) and copy the printed URL.
 2. **Frontend:** run Streamlit on your computer (Part 2 below) and paste the URL and API key.
 3. Upload a text-based PDF and start studying.
 
@@ -98,38 +106,34 @@ Start the **backend first**. The frontend needs the ngrok URL that the backend p
 
 ## Part 1 — Backend on Kaggle
 
+The backend is the `backend/` folder. You run it from **your own Kaggle notebook** (the notebook is not part of this project). The notebook must do these things, in order:
+
+1. Make the backend code available (attach the `backend` folder as a Kaggle dataset, then unzip or copy it to `/kaggle/working`).
+2. Install the packages from `backend/requirements.txt` (this includes `uvicorn` and `pyngrok`; keep Kaggle's own `torch`).
+3. Set the environment variables **before** importing the app:
+   - `API_KEY` — a long private password (from a Kaggle Secret)
+   - `LLM_NAME` — the model to load (see below)
+   - `QUANT` — `4bit` (needs a CUDA GPU)
+4. `from app import app` — this loads the models, which takes several minutes the first time.
+5. Open an ngrok tunnel to port 8000 (with your `NGROK_TOKEN` secret) and run `uvicorn.run(app, host="0.0.0.0", port=8000)` in a background thread.
+6. Print the public ngrok URL.
+
 ### One-time setup
 
-1. **Dataset:** go to kaggle.com/datasets → **New Dataset** and upload `ddd.zip` (the project code). Keep it **Private**.
-   Do **not** include `.venv`, `.venv-ui`, `__pycache__`, `student.db`, or model files. The notebook installs packages, and the model downloads itself.
+1. **Dataset:** go to kaggle.com/datasets → **New Dataset** and upload the **`backend` folder only** (zipped). Keep it **Private**. Do **not** include `.venv`, `__pycache__`, or model files. The model downloads itself.
 2. **ngrok token:** log in at dashboard.ngrok.com and copy your authtoken from **Your Authtoken**.
-3. **Notebook:** create a notebook (or import `AdaptiveAI_Kaggle_Backend.ipynb`), then in its settings:
-   - **Accelerator:** GPU T4 x2
-   - **Internet:** On
-   - **Add Input:** attach your dataset
-4. **Secrets:** in the notebook menu **Add-ons → Secrets**, add two secrets and tick both so they attach to the notebook:
-   - `NGROK_TOKEN` = your ngrok authtoken
-   - `API_KEY` = a long private password you choose
+3. **Notebook settings:** **GPU T4 x2**, **Internet: On**, and attach your dataset under **Input**.
+4. **Secrets:** in **Add-ons → Secrets**, add `NGROK_TOKEN` and `API_KEY`, and tick both so they attach to the notebook.
 
-### Run it (every session)
+### Check that it works
 
-Run the notebook cells **in order, one at a time**:
+Open `<your-url>/health`. You should see `status: ok` and your model name. A request to a protected endpoint without the right key returns `401`.
 
-| Cell | What it does | Expected result |
-|---|---|---|
-| 1 | Chooses the model (`LLM_NAME`) | nothing printed |
-| 2 | Finds and unpacks the project | `Project dir: ...` |
-| 3 | Installs packages | Dependency warnings about gradio, pydantic, starlette etc. are harmless |
-| 4 | Reads your secrets | nothing printed |
-| 5 | Downloads and loads the model | `GPUs: 2` (first run takes several minutes) |
-| 6 | Starts the server and the ngrok tunnel | `PUBLIC URL: https://xxxx.ngrok-free.app` |
-| 7 | Self-test | `status: ok`, then `400 No PDF material indexed yet` (this means your key works) |
-
-Copy the **PUBLIC URL** from cell 6 and **leave the notebook running**. If you stop or restart it, the URL dies.
+Copy the **public URL** and **leave the notebook running**. If you stop or restart it, the URL dies.
 
 ### Choosing a model
 
-Set `LLM_NAME` in notebook cell 1 (the notebook sets it through the `LLM_NAME` environment variable, which `config.py` reads):
+Set `LLM_NAME` before the app is imported:
 
 | Model | Notes |
 |---|---|
@@ -137,49 +141,53 @@ Set `LLM_NAME` in notebook cell 1 (the notebook sets it through the `LLM_NAME` e
 | `Qwen/Qwen2.5-14B-Instruct` | **Recommended** for T4 x2 (4-bit, about 9 GB) |
 | `Qwen/Qwen2.5-32B-Instruct` | Strongest, slow on T4s |
 
-> **Important:** the default in `config.py` is `Qwen/Qwen2.5-0.5B-Instruct`, a very small model meant for quick local tests. Its answers and quizzes are weak. For real use, set a bigger `LLM_NAME` as above.
+> **Important:** the default in `config.py` is `Qwen/Qwen2.5-0.5B-Instruct`, a very small model meant for quick tests. Its answers and quizzes are weak. For real use, set a bigger `LLM_NAME`.
 
 ### Backend settings (environment variables)
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `API_KEY` | see warning below | Bearer token for all protected endpoints |
+| `API_KEY` | empty | Bearer token for all protected endpoints. Empty = no key required (local use only). **Always set it on Kaggle.** |
 | `LLM_NAME` | `Qwen/Qwen2.5-0.5B-Instruct` | Language model |
 | `EMB_NAME` | `BAAI/bge-m3` | Embedding model |
-| `QUANT` | `4bit` | Quantization (`4bit` needs a CUDA GPU with bitsandbytes) |
+| `QUANT` | `4bit` | `4bit`, `8bit` or `fp16` (`4bit` and `8bit` need a CUDA GPU with bitsandbytes) |
 | `MAX_PDF_MB` | `30` | Upload size limit |
 | `MAX_TOPICS_PER_DOC` | `8` | Topics per PDF |
 
-> **Security warning:** if `API_KEY` is not set, `config.py` falls back to a key written in the file. Always set your own `API_KEY` secret, change or remove the fallback in `config.py`, and never share a notebook or zip that contains real keys. Anyone with your ngrok URL and key can use your GPU.
+> **Security:** with no `API_KEY` the server needs no key, which is fine on your own computer (`127.0.0.1` only) but **never** with ngrok. Never print your key in a notebook cell, and clear a notebook's outputs before sharing it. Anyone with your ngrok URL and key can use your GPU.
 
 ---
 
-## Part 2 — Frontend on your computer (Windows)
+## Part 2 — Frontend on your computer (Windows, Git Bash)
+
+All commands below are for **Git Bash**, run from the **`frontend`** folder (the one containing `streamlit_app.py`). Use Python 3.10 or 3.11.
 
 ### One-time setup
 
-Use Python 3.10 or 3.11. In PowerShell, from the project folder (the one containing `streamlit_app.py`):
-
-```powershell
-python -m venv .venv-ui
-.venv-ui\Scripts\activate
+```bash
+cd /c/path/to/AdaptiveAI/frontend
+python -m venv .venv-ui                 # if "python" is not found, try: py -m venv .venv-ui
+source .venv-ui/Scripts/activate        # your prompt now starts with (.venv-ui)
 pip install -r requirements-frontend.txt
 ```
 
 ### Run it (every session)
 
-```powershell
-.venv-ui\Scripts\activate
-$env:ADAPTIVE_BACKEND_URL="https://xxxx.ngrok-free.app"
-$env:ADAPTIVE_API_KEY="your-key"
+```bash
+cd /c/path/to/AdaptiveAI/frontend
+source .venv-ui/Scripts/activate
+export ADAPTIVE_BACKEND_URL="https://xxxx.ngrok-free.app"
+export ADAPTIVE_API_KEY="your-key"
 streamlit run streamlit_app.py
 ```
+
+Variables set with `export` only last for that Git Bash window. Open a new window and you must set them again (or use the sidebar).
 
 The browser opens at `http://localhost:8501`.
 
 The two environment variables are optional. You can also skip them and type the values in the sidebar under **🔌 Connection**:
 
-- **Backend URL (ngrok):** the URL from Kaggle cell 6
+- **Backend URL (ngrok):** the URL printed by your Kaggle notebook
 - **API key:** exactly the same value as your Kaggle `API_KEY` secret
 - Click **Test connection**. You should see 🟢 **Connected** with the model name.
 
@@ -197,16 +205,48 @@ To switch students, change the file name under **🗂️ Student file** in the s
 
 ---
 
+### Optional: run the backend on your own computer (no ngrok)
+
+Only useful if your computer has a suitable GPU. In a **second** Git Bash window:
+
+```bash
+cd /c/path/to/AdaptiveAI/backend
+python -m venv .venv && source .venv/Scripts/activate
+pip install -r requirements.txt
+# No API key is needed locally. Keep --host 127.0.0.1 so only your computer can reach it.
+uvicorn app:app --host 127.0.0.1 --port 8000
+```
+
+Then start Streamlit in the first window with `export ADAPTIVE_BACKEND_URL="http://127.0.0.1:8000"` and leave the API key box empty.
+
+### Optional: put the project on GitHub (Git Bash)
+
+```bash
+cd /c/path/to/AdaptiveAI        # the project root (contains backend/ and frontend/)
+git init
+git add .
+git commit -m "AdaptiveAI project"
+git branch -M main
+git remote add origin https://github.com/YOUR_USER/YOUR_REPO.git
+git push -u origin main
+```
+
+The included `.gitignore` keeps `student.db`, virtual environments and caches out of the repository. Never commit real keys or tokens.
+
+---
+
 ## Using the app
 
-1. **Upload a PDF** in the sidebar. It must be a text-based PDF (selectable text). Scanned images are not supported (no OCR). The backend splits it into chunks, builds the search index, and asks the model to title each topic, so ingest takes a while.
-2. **🏠 Home:** overview and quick actions.
+**Sidebar (left):** page menu, your level, **🔌 Connection** (backend URL, API key, Test connection) and **🗂️ Student file**.
+
+1. **🏠 Home → "Drop your PDF":** choose a text-based PDF and click **🚀 Upload & build my study map**. Scanned images are not supported (no OCR). The backend splits the PDF into chunks, builds the search index and asks the model to title each topic, so this takes a while.
+2. **🏠 Home → "Server tools"** (right side):
+   - **🔄 Sync topics from server:** use it if the server already has your PDF (for example after the page reloaded).
+   - **🧹 Reset server index:** clears every uploaded PDF from the server. Your progress is kept.
 3. **💬 Ask the Owl:** ask questions about the PDF. Open "See the passages I used" to check the sources.
 4. **🎯 Quiz Time:** the quiz covers up to 3 topics, prioritising weak and unseen ones. Wrong answers can become flashcards automatically.
-5. **🃏 Flashcards:** review due cards (Again / Hard / Good / Easy), or make new cards for a topic.
-6. **📊 My Progress:** mastery per topic, quiz history, and a mastery timeline.
-
-**Starting over:** use **🧹 Reset server index** in the sidebar to clear all uploaded PDFs from the server. Your progress is kept. To delete progress too, use **🗑️ Reset my progress** on the progress page.
+5. **🃏 Flashcards:** **Review** your due cards (Again / Hard / Good / Easy), or **Make new cards** for a topic.
+6. **📊 My Progress:** mastery per topic, quiz history, and a mastery timeline. **🗑️ Reset my progress** (tick the checkbox first) deletes your answers, quizzes and flashcards.
 
 ### Topics
 
@@ -227,7 +267,8 @@ Flashcards use SM-2 spaced repetition. Good reviews give intervals of about 1 da
 
 To run the student-layer tests:
 
-```powershell
+```bash
+cd frontend
 python -m unittest discover -s tests -v
 ```
 
@@ -256,16 +297,16 @@ Quiz generation retries up to three times, validates the output, and avoids dupl
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `401 Unauthorized` on upload or reset | API key in the sidebar differs from the Kaggle `API_KEY` | Retype it exactly. In Kaggle, run `print(repr(API_KEY))` to spot hidden spaces. After editing a secret, rerun cell 4 onward |
-| `409 ... already indexed` | That filename is already in the index | Click **🧹 Reset server index**, or restart the backend |
+| `401 Unauthorized` on upload or reset | API key in the sidebar differs from the Kaggle `API_KEY` | Retype it exactly (watch for extra spaces). After editing a Kaggle secret, restart the notebook so the new value is loaded |
+| `409 ... already indexed` | That filename is already in the index | On **🏠 Home → Server tools**, click **🧹 Reset server index**, or restart the backend |
 | "Can't reach the backend" | Notebook stopped, or the URL changed | Check Kaggle is running and paste the **current** URL |
 | "Server took too long" | Model busy (a 14B model on T4 can take 20 to 60 s per answer) | Wait and retry, or switch to the 7B model |
 | `422 No readable text found` | The PDF is scanned images | Use a text-based PDF |
 | `400 Could not read PDF` | Corrupt or encrypted PDF | Try another file |
 | `413 ... too large` | File over `MAX_PDF_MB` (default 30 MB) | Use a smaller PDF or raise `MAX_PDF_MB` |
-| `CUDA out of memory` in the Kaggle log | Model too large | Use the 7B model and rerun from cell 5 |
-| `ddd.zip not found` | Kaggle unpacked the dataset automatically | The notebook's cell 2 handles both cases; check the dataset is attached under **Input** |
-| `did not return JSON` | Wrong or stale URL | Rerun cell 6 and paste the new URL |
+| `CUDA out of memory` in the Kaggle log | Model too large | Use the 7B model and restart the backend |
+| Notebook can't find the project | The dataset is not attached | Attach your backend dataset under **Input** (right sidebar) |
+| `did not return JSON` | Wrong or stale URL | Restart the tunnel in your notebook and paste the new URL |
 
 ---
 
